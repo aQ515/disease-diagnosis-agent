@@ -1,0 +1,44 @@
+# ---- 密钥 / 配置（绝不提交）----
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials*.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+*.log
+
+# ---- Node / 前端 ----
+node_modules/
+dist/
+.vite/
+.cache/
+npm-debug.log*
+yarn-error.log*
+.eslintcache
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ---- 本地运行时产物 ----
+.slidep/
+*.pid
+*.tmp
+*.bak
+*.bak-*
+_scratch/
