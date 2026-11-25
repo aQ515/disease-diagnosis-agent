@@ -113,15 +113,75 @@ disease-diagnosis-agent/
 
 ## 三、快速开始
 
-### 0. 前置
-Neo4j 已启动（`bolt://localhost:7687`，账号 `neo4j`），项目根 `.env` 配好 `DASHSCOPE_API_KEY`。
+### 0. 环境准备（首次必读）
+
+**① JDK 版本要求（关键）**
+
+Neo4j **3.5.x 只支持 Java 8 / 11**，用 JDK 17 启动会直接崩溃并自动 shutdown
+（日志出现 `Neo4j Server shutdown initiated by request` + 一栈 `org.neo4j.kernel` 异常）。
+
+若机器只有 JDK 17，无需卸载，下载一个独立 JDK 11 放在任意目录即可，例如：
+`C:\Users\86181\java\jdk-11.0.33+10`（Temurin 11，Adoptium 官方发行版）。
+
+**② 启动 Neo4j**
+
+在 PowerShell 里（**每行依次执行**）：
+
+```powershell
+$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"   # 仅当前窗口生效，不影响其它 Java 项目
+cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
+.\neo4j.bat console
+```
+
+看到 `Remote interface available at http://localhost:7474/` 即为启动成功。
+**该窗口不能关闭**（关闭即停止服务）；不想留窗口可用 `neo4j.bat install-service` + `neo4j.bat start` 装成服务。
+
+> 用浏览器打开 `http://localhost:7474` 若报 `NotFoundError: removeChild`，
+> 是 Neo4j 3.5 老版 Browser 前端与现代浏览器内核不兼容，**服务本身正常**，
+> 可忽略该页面，直接用代码连接验证。
+
+**③ 忘记 Neo4j 密码时重置**
+
+```powershell
+# 1) 先停服务（在启动窗口按 Ctrl+C）
+# 2) 删除认证文件（只删账号密码，graph.db 图谱数据不丢）
+Remove-Item "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\data\dbms\auth" -Force
+# 3) 重设初始密码（需 JAVA_HOME 指向 JDK 11）
+cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
+$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"
+.\neo4j-admin.bat set-initial-password 123456
+# 4) 重新启动：.\neo4j.bat console
+```
+
+**④ 配置 `.env` 与 Python 环境**
+
+```powershell
+cd <项目根目录>
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt -i https://pypi.org/simple   # 若默认源连不上，显式指定官方源
+
+cp .env.example .env
+# 编辑 .env 填入 DASHSCOPE_API_KEY（阿里云百炼），并确认 NEO4J_PASSWORD 与上面重置的密码一致
+```
+
+Windows 终端若打印中文报 `'ascii' codec can't encode characters`，设置：
+```powershell
+$env:PYTHONIOENCODING = "utf-8"
+```
+（永久方案：`[Environment]::SetEnvironmentVariable("PYTHONIOENCODING","utf-8","User")` 后重开终端）
+
+**⑤ 验证环境**
+
+```powershell
+python tests\test_env.py     # Neo4j + 大模型均显示 OK 即通过
+```
 
 ### 1. 智能体层（无界面）
+
+在**已激活 .venv** 的终端里执行（下列 `python` 均指 `.venv\Scripts\python.exe`）：
+
 ```bash
-pip install -r requirements.txt
-
-cp .env.example .env            # 填入自己的 key
-
 python -m neo4j_tools.import_disease   # 导入知识图谱（31 节点 / 42 关系）
 
 python tests/test_env.py               # 环境自检（Neo4j + 大模型）
@@ -292,6 +352,11 @@ B 组因为先查图谱、再让模型基于事实组织语言，全部提及都
 | 4 | 别名检索失败（「消渴病」查不到） | 单靠 `d.name CONTAINS` 匹配不到别名 | 查询条件扩展为 `name/alias1/alias2` 双向包含，并按精确匹配优先级排序 |
 | 5 | 对照实验首版结果「A 组 100% / B 组 100%」完全失真 | 规则抽取把「型糖尿病的典型警示症」当成疾病实体 | 改为大模型抽取 + 停用字过滤 + 规则兜底，并加双向包含判定 |
 | 6 | `npm test` 报 `Cannot find module http-proxy-agent/dist/index.js` | 依赖在别处安装时丢了 14 个包的入口文件（dev 链路，不影响 dev server） | 从镜像重新拉取这 14 个包整体覆盖，并用 `scripts/repair_node_modules.py` 前置扫描缺失入口 |
+| 7 | Neo4j 启动即自动 shutdown（日志 `shutdown initiated by request` + 一栈 Java 异常） | 机器只有 JDK 17，Neo4j 3.5.x 不兼容 Java 17 | 装独立 JDK 11，启动前设 `$env:JAVA_HOME` 指向它（见「三、0.①」） |
+| 8 | 浏览器打开 `:7474` 报 `NotFoundError: removeChild` | Neo4j 3.5 老版 Browser 前端与现代浏览器内核不兼容 | 服务本身正常，忽略该页面，用代码验证连接 |
+| 9 | `import_disease` 报 `py2neo.errors.ClientError: [Security.Unauthorized]` | `.env` 里 `NEO4J_PASSWORD` 是旧密码，与重置后的不一致 | 把 `.env` 的 `NEO4J_PASSWORD` 改成实际密码；另注意要用 `.venv` 的解释器而非全局 `python` |
+| 10 | `pip install` 报 `Could not find a version... (from versions: none)` | 全局 pip 配的清华源在本机连不上（网络问题，不是没包） | `pip install -r requirements.txt -i https://pypi.org/simple`；或 `pip config set global.index-url https://pypi.org/simple` |
+| 11 | 打印中文报 `'ascii' codec can't encode characters` | Windows 终端默认编码不支持中文 | `$env:PYTHONIOENCODING = "utf-8"`，或设用户级环境变量永久生效 |
 
 ---
 

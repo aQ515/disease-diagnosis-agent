@@ -42,3 +42,6 @@ Thumbs.db
 *.bak
 *.bak-*
 _scratch/
+
+# ---- 本地数据库 ----
+db.sqlite3
