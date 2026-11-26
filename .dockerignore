@@ -1,0 +1,17 @@
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.log
+.git/
+.idea/
+node_modules/
+frontend/dist/
+data/MNIST/
+docker/
+*.pth
+*.png

@@ -45,3 +45,6 @@ _scratch/
 
 # ---- 本地数据库 ----
 db.sqlite3
+
+# ---- 运行时会话数据 ----
+fastapi_app/history.json

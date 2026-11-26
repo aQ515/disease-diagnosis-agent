@@ -1,0 +1,7 @@
+# FastAPI + LangGraph 版新增依赖
+# 注意：langgraph 必须锁 0.6.11（1.x 要求 langchain-core>=1.0，会破坏本项目 0.3 全家桶）
+fastapi
+uvicorn[standard]
+redis
+httpx
+langgraph==0.6.11
