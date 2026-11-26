@@ -1,4 +1,4 @@
-"""医疗 AI 导诊助手 · FastAPI 版
+"""医疗 AI 智能导诊与用药助手
 
 启动：uvicorn backend.main:app --reload --port 8002
 
@@ -34,7 +34,7 @@ from backend.cache import cache
 from backend import history
 from backend.config import settings
 
-app = FastAPI(title="医疗 AI 导诊助手", version="1.0")
+app = FastAPI(title="医疗 AI 智能导诊与用药助手", version="1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -54,7 +54,7 @@ def index():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
     if os.path.exists(path):
         return FileResponse(path)
-    return HTMLResponse("<h1>医疗 AI 导诊助手</h1><p>前端页面未找到</p>")
+    return HTMLResponse("<h1>医疗 AI 智能导诊与用药助手</h1><p>前端页面未找到</p>")
 
 
 @app.get("/api/engine")

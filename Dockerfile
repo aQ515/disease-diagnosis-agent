@@ -1,4 +1,4 @@
-# 医疗 AI 导诊助手 API 镜像
+# 医疗 AI 智能导诊与用药助手 · API 镜像
 FROM python:3.13-slim
 
 WORKDIR /app

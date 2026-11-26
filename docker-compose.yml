@@ -1,4 +1,4 @@
-# 医疗 AI 导诊助手 · 一键启动
+# 医疗 AI 智能导诊与用药助手 · 一键启动
 # 用法：docker compose up -d
 # 访问：前端 http://localhost:8002
 #

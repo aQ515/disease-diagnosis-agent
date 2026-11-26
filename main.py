@@ -23,7 +23,7 @@ LINE = "=" * 72
 
 def banner():
     print(LINE)
-    print("  疾病辅助诊断智能体  |  症状自查 · 疾病百科")
+    print("  医疗 AI 智能导诊与用药助手  |  症状自查 · 用药参考")
     print("  输入身体不适的描述即可，例如：我最近老是口渴、尿多，还瘦了")
     print("  指令：reset 清空记忆   q 退出")
     print(LINE)
