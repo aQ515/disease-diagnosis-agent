@@ -8,9 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-web.txt requirements-api.txt ./
+COPY requirements.txt requirements-api.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir -r requirements-web.txt \
     && pip install --no-cache-dir -r requirements-api.txt
 
 COPY . .
