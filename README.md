@@ -8,7 +8,7 @@ FastAPI 提供 SSE 流式接口，Redis 缓存高频问答。
 ## 一、架构
 
 ```
-浏览器（Vue3 原生前端，无构建步骤）
+浏览器（单文件页面，无构建步骤）
    │  POST /chat  (SSE)
    ▼
 FastAPI  ── 缓存层（Redis → 内存降级）
@@ -29,40 +29,130 @@ Neo4j（疾病图谱） + 大模型（百炼 qwen-plus）
 
 ## 二、快速开始
 
-### 方式 A：本地跑（推荐先看这个）
+### 1. 依赖清单
 
-**1. 前置**：Neo4j 已启动（见附录「环境准备」）、`.env` 已配 Key。
+| 依赖 | 版本要求 | 用途 |
+|---|---|---|
+| Python | 3.13 | 运行环境 |
+| JDK | 11（仅 Neo4j 用） | Neo4j 3.5 不兼容 JDK 17，见本节第 4 步 |
+| Neo4j | 3.5.28 | 疾病图谱 |
+| Redis | 可选 | 缓存；没装时自动用内存 |
+| 百炼 API Key | — | 大模型调用 |
 
-**2. 装依赖**
+Python 依赖分两个文件：`requirements.txt`（核心 + langchain 全家桶）、`requirements-api.txt`（FastAPI / LangGraph / Redis）。
+
+### 2. 安装 Python 依赖
+
+**所有命令都在项目根目录执行**（不在 Neo4j 的 bin 目录）：
+
 ```powershell
-cd disease-diagnosis-agent
+cd C:\Users\86181\CodeBuddy\20260515101840\disease-diagnosis-agent
+python -m venv .venv
 .\.venv\Scripts\activate
-pip install fastapi uvicorn redis httpx langgraph==0.6.11 -i https://pypi.org/simple
+pip install -r requirements.txt -i https://pypi.org/simple
+pip install -r requirements-api.txt -i https://pypi.org/simple
 ```
 
-> langgraph 需锁 0.6.11：1.x 要求 langchain-core ≥1.0，与本项目 langchain 0.3 不兼容。
+> `langgraph` 锁在 0.6.11：1.x 要求 `langchain-core>=1.0`，与本项目 langchain 0.3 不兼容。
+> pip 若报 `Could not find a version... (from versions: none)`，是全局源连不上，
+> 用上面命令里的 `-i https://pypi.org/simple`；或执行
+> `pip config set global.index-url https://pypi.org/simple` 永久改掉。
 
-**3. 启动**
+### 3. 配置 `.env`
+
+在项目根目录建 `.env`（已加入 `.gitignore`，不会提交）：
+
+```ini
+DASHSCOPE_API_KEY=sk-你的百炼Key
+QWEN_MODEL_NAME=qwen-plus
+QWEN_TEMPERATURE=0.3
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=123456
+```
+
+- `DASHSCOPE_API_KEY`：阿里云百炼控制台创建，用 OpenAI 兼容模式；
+- `NEO4J_PASSWORD`：必须和 Neo4j 实际密码一致（忘记密码见本节第 4 步）；
+- `QWEN_MODEL_NAME`：可换 `qwen-turbo`（快）或 `qwen-max`（强）；
+- Windows 终端打印中文若报编码错，执行 `$env:PYTHONIOENCODING = "utf-8"`。
+
+### 4. 启动 Neo4j
+
+在**一个单独的 PowerShell 窗口**执行（这个窗口不能关）：
+
+```powershell
+$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"
+cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
+.\neo4j.bat console
+```
+
+看到 `Remote interface available at http://localhost:7474/` 即成功。
+
+> 浏览器打开 `:7474` 若报 `NotFoundError: removeChild`，是 Neo4j 3.5 老版 Browser
+> 与新版浏览器内核不兼容，服务本身正常，用代码验证连接即可。
+
+**忘记 Neo4j 密码时**（停服务后执行，图谱数据不丢）：
+
+```powershell
+Remove-Item "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\data\dbms\auth" -Force
+cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
+$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"
+.\neo4j-admin.bat set-initial-password 123456
+```
+
+### 5. 导入图谱
+
+**新开一个终端**，在项目根目录执行（已有数据可跳过）：
+
+```powershell
+cd C:\Users\86181\CodeBuddy\20260515101840\disease-diagnosis-agent
+.venv\Scripts\python.exe -m neo4j_tools.import_disease
+```
+
+正常输出：`31 节点 / 42 关系`。
+
+### 6. 启动服务
+
+**还在刚才那个项目根目录的终端**，确认 `.venv` 已激活后执行：
+
 ```powershell
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8002
 ```
 
-**4. 打开** `http://localhost:8002`
+看到 `Uvicorn running on http://0.0.0.0:8002` 即成功。
 
-### 方式 B：Docker 一键（含 Neo4j + Redis）
+浏览器打开 **http://localhost:8002** —— 前端页面已内置在 FastAPI 里，不用再开前端服务。
+
+### 7. 验证
 
 ```powershell
-# 1. 确认 .env 里有 DASHSCOPE_API_KEY（不会进镜像）
-# 2. 一键启动
-docker compose up -d
-
-# 3. 首次需导入图谱（进容器执行一次）
-docker exec -it medical-agent-api python -m neo4j_tools.import_disease
-
-# 4. 访问 http://localhost:8002
+curl http://127.0.0.1:8002/api/health
 ```
 
-停止：`docker compose down`
+返回里 `neo4j`、`llm` 都是 `ok` 即全通。
+
+### 8. Docker 方式（可选）
+
+跳过第 2、4、5 步，装好 Docker 后直接：
+
+```powershell
+# 确认 .env 里有 DASHSCOPE_API_KEY
+docker compose up -d
+docker exec -it medical-agent-api python -m neo4j_tools.import_disease
+```
+
+访问 `http://localhost:8002`。停止：`docker compose down`。
+
+### 常见报错
+
+| 报错 | 原因 | 解决 |
+|---|---|---|
+| `Could not import module "backend.main"` | 在 Neo4j 的 bin 目录里执行了命令 | `cd` 到项目根目录再启动 |
+| `Address already in use` | 8002 端口被别的进程占用 | 停掉旧进程，或改用 `--port 8003` |
+| `[Security.Unauthorized]`（Neo4j） | `.env` 密码和 Neo4j 实际密码不一致 | 改 `.env` 的 `NEO4J_PASSWORD` |
+| `401` / `Invalid API Key` | Key 无效或平台不匹配 | 检查 `.env` 的 Key 与模型名 |
+| `from versions: none` | pip 源连不上 | 加 `-i https://pypi.org/simple` |
+| `'ascii' codec can't encode` | 终端编码不支持中文 | `$env:PYTHONIOENCODING = "utf-8"` |
 
 ---
 
@@ -148,51 +238,6 @@ Dockerfile
 ---
 
 # 附录：技术与踩坑记录
-
-### 环境准备
-
-**JDK 版本**
-
-Neo4j 3.5.x 只支持 Java 8 / 11，用 JDK 17 启动会崩溃并自动 shutdown。
-机器只有 JDK 17 时无需卸载，单独放一份 JDK 11 即可（如 `C:\Users\86181\java\jdk-11.0.33+10`）。
-
-**启动 Neo4j**（PowerShell，依次执行）
-
-```powershell
-$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"
-cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
-.\neo4j.bat console
-```
-
-看到 `Remote interface available at http://localhost:7474/` 即启动成功。该窗口不能关，
-否则服务停止；也可 `neo4j.bat install-service` + `neo4j.bat start` 装成后台服务。
-
-> 浏览器打开 `:7474` 若报 `NotFoundError: removeChild`，是 Neo4j 3.5 老版 Browser
-> 与新版浏览器内核不兼容，服务本身正常，用代码验证即可。
-
-**忘记密码时重置**（数据不丢）
-
-```powershell
-# 停服务后执行
-Remove-Item "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\data\dbms\auth" -Force
-cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
-$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"
-.\neo4j-admin.bat set-initial-password 123456
-```
-
-**Python 环境与编码**
-
-```powershell
-cd <项目根目录>
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt -i https://pypi.org/simple
-$env:PYTHONIOENCODING = "utf-8"   # Windows 终端中文输出
-```
-
-> pip 全局源若连不上，用 `pip config set global.index-url https://pypi.org/simple` 改掉。
-
----
 
 ### 知识图谱设计
 
@@ -399,18 +444,10 @@ B 组因为先查图谱、再让模型基于事实组织语言，全部提及都
 | 3 | 场景一给出「置信度 100%」 | 模型把「症状完全匹配」当成「医学确诊」 | 提示词明确 confidence 含义 + 代码 `_clamp_confidence` 强制 ≤0.9 |
 | 4 | 别名检索失败（「消渴病」查不到） | 单靠 `d.name CONTAINS` 匹配不到别名 | 查询条件扩展为 `name/alias1/alias2` 双向包含，并按精确匹配优先级排序 |
 | 5 | 对照实验首版结果「A 组 100% / B 组 100%」完全失真 | 规则抽取把「型糖尿病的典型警示症」当成疾病实体 | 改为大模型抽取 + 停用字过滤 + 规则兜底，并加双向包含判定 |
-| 7 | Neo4j 启动即自动 shutdown（日志 `shutdown initiated by request` + 一栈 Java 异常） | 机器只有 JDK 17，Neo4j 3.5.x 不兼容 Java 17 | 装独立 JDK 11，启动前设 `$env:JAVA_HOME` 指向它（见附录「环境准备」） |
+| 7 | Neo4j 启动即自动 shutdown（日志 `shutdown initiated by request` + 一栈 Java 异常） | 机器只有 JDK 17，Neo4j 3.5.x 不兼容 Java 17 | 装独立 JDK 11，启动前设 `$env:JAVA_HOME` 指向它（见「快速开始 · 4. 启动 Neo4j」） |
 | 8 | 浏览器打开 `:7474` 报 `NotFoundError: removeChild` | Neo4j 3.5 老版 Browser 前端与现代浏览器内核不兼容 | 服务本身正常，忽略该页面，用代码验证连接 |
 | 9 | `import_disease` 报 `py2neo.errors.ClientError: [Security.Unauthorized]` | `.env` 里 `NEO4J_PASSWORD` 是旧密码，与重置后的不一致 | 把 `.env` 的 `NEO4J_PASSWORD` 改成实际密码；另注意要用 `.venv` 的解释器而非全局 `python` |
 | 10 | `pip install` 报 `Could not find a version... (from versions: none)` | 全局 pip 配的清华源在本机连不上（网络问题，不是没包） | `pip install -r requirements.txt -i https://pypi.org/simple`；或 `pip config set global.index-url https://pypi.org/simple` |
 | 11 | 打印中文报 `'ascii' codec can't encode characters` | Windows 终端默认编码不支持中文 | `$env:PYTHONIOENCODING = "utf-8"`，或设用户级环境变量永久生效 |
 
 ---
-
-## 八、已知限制
-
-- 示例数据只有 3 个病种，覆盖面窄，仅用于演示完整链路；扩展只需往 CSV 追加行并重跑导入；
-- 症状同义词表是手工维护的白名单，新病种带来新口语说法时需要同步补充；
-- 未接入真实患者病史，`confidence` 只反映「与图谱的匹配程度」，不是医学概率；
-- 图谱里没有剂量信息，因此本项目**刻意不给任何具体用法用量**，只做方案推荐与就诊科室引导；
-- 对照实验衡量的是「提及是否落在知识库范围内」，受图谱规模限制，详见该节说明。
