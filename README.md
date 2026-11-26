@@ -1,15 +1,171 @@
-# 疾病辅助诊断智能体
+# 医疗 AI 智能导诊与用药助手（FastAPI + LangGraph 版）
 
-基于 **Neo4j 知识图谱 + 大模型**的症状自查 / 疾病百科智能体。
-用户用自然语言描述身体不适，系统沿「感知 → 图谱检索 → 诊断 → 报告」四角色流水线，
-输出疑似疾病（含常用名）、判断依据、治疗方案、预防措施、推荐就诊科室与就医提示。
-
-前后端形态参考课程项目 `professional-training`（Django REST + Vue3/Vite），
-本项目的**领域、图谱、算法、界面与创新点均为自主实现**。
-
-> ⚠️ 本项目为课程作品，仅作辅助自查参考，**不能替代执业医师诊断**。
+> 本文档对应项目的 **v2 架构升级**：在原有「Neo4j + Django + 四角色 Agent」基础上，
+> 升级为 **FastAPI + SSE 流式 + LangGraph 编排 + Redis 缓存 + Docker 部署**。
+> 本版本已取代原 Django + Vue3 实现，为项目唯一主体；核心 agents/ 与 neo4j_tools/ 直接复用。
 
 ---
+
+## 一、为什么升级（技术决策）
+
+| 维度 | v1（Django） | v2（FastAPI + LangGraph） |
+|---|---|---|
+| 接口风格 | 同步返回完整 JSON | **SSE 流式**，打字机效果，用户可见阶段进度 |
+| 异步支持 | Django 同步为主 | **原生 async**，适合 LLM 长耗时 + 高并发 |
+| Agent 编排 | 硬编码四步顺序调用 | **LangGraph StateGraph**，条件分支 + 状态可观测 |
+| 缓存 | 无 | **Redis**（高频问答秒级返回，降级内存） |
+| 部署 | 手工起 3 个终端 | **docker compose 一键** |
+
+**面试可讲点**：这次升级不是堆技术名词，而是针对真实痛点——
+LLM 推理 3-6 秒用户干等（→ SSE）、流程写死难扩展（→ LangGraph）、
+重复问题反复烧 token（→ Redis）、环境难复现（→ Docker）。
+
+---
+
+## 二、架构
+
+```
+浏览器（Vue3 原生前端，无构建步骤）
+   │  POST /chat  (SSE)
+   ▼
+FastAPI  ── 缓存层（Redis → 内存降级）
+   │
+   ▼
+LangGraph StateGraph
+   perception ──条件路由──┬─→ graph  (Neo4j 图谱检索)
+                         ├─→ rag    (用药类 → RAG)
+                         └─→ chitchat
+                              ↓
+                         diagnose → report → END
+   │
+   ▼
+Neo4j（疾病图谱） + 大模型（百炼 qwen-plus）
+```
+
+---
+
+## 三、快速开始
+
+### 方式 A：本地跑（推荐先看这个）
+
+**1. 前置**：Neo4j 已启动（见主 README 的 JDK 11 说明）、`.env` 已配 Key。
+
+**2. 装依赖**
+```powershell
+cd disease-diagnosis-agent
+.\.venv\Scripts\activate
+pip install fastapi uvicorn redis httpx langgraph==0.6.11 -i https://pypi.org/simple
+```
+
+> ⚠️ **langgraph 必须锁 0.6.11**：新版 1.x 要求 langchain-core ≥1.0，会破坏本项目
+> langchain 0.3 全家桶。这是实测踩过的坑。
+
+**3. 启动**
+```powershell
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8002
+```
+
+**4. 打开** `http://localhost:8002`
+
+### 方式 B：Docker 一键（含 Neo4j + Redis）
+
+```powershell
+# 1. 确认 .env 里有 DASHSCOPE_API_KEY（不会进镜像）
+# 2. 一键启动
+docker compose up -d
+
+# 3. 首次需导入图谱（进容器执行一次）
+docker exec -it medical-agent-api python -m neo4j_tools.import_disease
+
+# 4. 访问 http://localhost:8002
+```
+
+停止：`docker compose down`
+
+---
+
+## 四、接口清单
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/chat` | **SSE 流式问答**，事件：`stage` / `token` / `done` / `error` |
+| GET | `/history/{sid}` | 会话历史 |
+| DELETE | `/history/{sid}` | 清空会话 |
+| GET | `/sessions` | 会话列表 |
+| GET | `/api/health` | 探活（neo4j / llm / cache / engine） |
+| GET | `/api/engine` | 当前 Agent 引擎与 LangGraph 可用性 |
+
+`POST /chat` 请求体：
+```json
+{"question": "我最近老是口渴、尿多，还瘦了", "session_id": "web-xxx", "use_cache": true}
+```
+
+SSE 事件流示例：
+```
+event: stage     data: {"name":"perception","msg":"正在理解你的问题…"}
+event: stage     data: {"name":"retrieval","msg":"检索 命中 图谱","detail":{...}}
+event: stage     data: {"name":"report","msg":"正在生成报告…"}
+event: token     data: {"text":"1."}
+event: token     data: {"text":" 诊断结论"}
+...（逐字流式）
+event: done      data: {"engine":"langgraph","route":"graph","sources":[...],"elapsed_s":4.2}
+```
+
+---
+
+## 五、四个核心实现（面试讲这些）
+
+### 1. SSE 流式打字机
+后端 `StreamingResponse` 按 2 字一片推送 `token` 事件；阶段事件让用户看到
+「理解 → 检索 → 生成」的进度，而不是干等 5 秒。前端用 `ReadableStream` 逐块解析。
+
+### 2. LangGraph 条件编排
+`backend/graph_flow.py` 用 `StateGraph` 定义 6 个节点 + 1 个条件边：
+- 感知节点后按意图路由：用药类 → RAG 分支，症状类 → Neo4j 分支，闲聊 → 直接对话
+- 三条分支汇合到诊断 → 报告 → END
+- 每步写入 `trace`（耗时），前端 done 事件可展示全链路轨迹
+
+### 3. Redis 缓存降级
+`backend/cache.py`：Redis 优先，`ping` 不通自动降级内存字典。
+键 = 问题文本 md5，命中直接流式吐历史答案（25s → 2s）。
+**服务不会因为 Redis 挂掉而不可用**——这是生产环境常见降级策略。
+
+### 4. 全链路降级
+图谱不可用 → `_empty_result()` + 通用模式继续回答；
+LangGraph 不可用 → 回退原四角色流水线；
+模型输出带剂量 → `guard_dosage()` 正则替换为「具体用量请遵医嘱」。
+**每一层都有兜底**，不会把异常直接抛给用户。
+
+---
+
+## 六、已知限制（诚实标注）
+
+- Redis 缓存按「问题文本 md5」做键，表述不同的同义问题不会命中（未做语义缓存）；
+- LangGraph 的 RAG 分支当前是 graph-backed 占位（项目未内置独立向量库），
+  真正 RAG 在 `Medical-RAG-QA` 仓库；
+- 前端是单文件原生 HTML/CSS/JS，未用 Vue3 工程化构建——为了零构建、易演示；
+- MySQL 用户系统未实现（对 AI 应用岗意义有限，历史用本地 JSON 存储）。
+
+---
+
+## 七、目录
+
+```
+backend/
+├── main.py          # FastAPI 应用 + SSE 接口
+├── graph_flow.py    # LangGraph StateGraph（阶段 2 核心）
+├── pipeline.py      # 统一入口：引擎选择 + 降级
+├── cache.py         # Redis → 内存 缓存降级
+├── history.py       # 会话历史（JSON）
+├── config.py        # 配置
+└── static/index.html # 前端（聊天气泡 + 打字机 + 侧边栏历史）
+docker-compose.yml   # Neo4j + Redis + API 一键编排
+Dockerfile
+```
+
+---
+
+# 附录：核心技术与踩坑（架构升级后仍适用）
 
 ## 一、知识图谱设计
 
@@ -108,126 +264,6 @@ disease-diagnosis-agent/
     ├── test_report.py         # 剂量护栏验收（4 项）
     └── test_pipeline.py       # 端到端（2 场景）
 ```
-
----
-
-## 三、快速开始
-
-### 0. 环境准备（首次必读）
-
-**① JDK 版本要求（关键）**
-
-Neo4j **3.5.x 只支持 Java 8 / 11**，用 JDK 17 启动会直接崩溃并自动 shutdown
-（日志出现 `Neo4j Server shutdown initiated by request` + 一栈 `org.neo4j.kernel` 异常）。
-
-若机器只有 JDK 17，无需卸载，下载一个独立 JDK 11 放在任意目录即可，例如：
-`C:\Users\86181\java\jdk-11.0.33+10`（Temurin 11，Adoptium 官方发行版）。
-
-**② 启动 Neo4j**
-
-在 PowerShell 里（**每行依次执行**）：
-
-```powershell
-$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"   # 仅当前窗口生效，不影响其它 Java 项目
-cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
-.\neo4j.bat console
-```
-
-看到 `Remote interface available at http://localhost:7474/` 即为启动成功。
-**该窗口不能关闭**（关闭即停止服务）；不想留窗口可用 `neo4j.bat install-service` + `neo4j.bat start` 装成服务。
-
-> 用浏览器打开 `http://localhost:7474` 若报 `NotFoundError: removeChild`，
-> 是 Neo4j 3.5 老版 Browser 前端与现代浏览器内核不兼容，**服务本身正常**，
-> 可忽略该页面，直接用代码连接验证。
-
-**③ 忘记 Neo4j 密码时重置**
-
-```powershell
-# 1) 先停服务（在启动窗口按 Ctrl+C）
-# 2) 删除认证文件（只删账号密码，graph.db 图谱数据不丢）
-Remove-Item "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\data\dbms\auth" -Force
-# 3) 重设初始密码（需 JAVA_HOME 指向 JDK 11）
-cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
-$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"
-.\neo4j-admin.bat set-initial-password 123456
-# 4) 重新启动：.\neo4j.bat console
-```
-
-**④ 配置 `.env` 与 Python 环境**
-
-```powershell
-cd <项目根目录>
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt -i https://pypi.org/simple   # 若默认源连不上，显式指定官方源
-
-cp .env.example .env
-# 编辑 .env 填入 DASHSCOPE_API_KEY（阿里云百炼），并确认 NEO4J_PASSWORD 与上面重置的密码一致
-```
-
-Windows 终端若打印中文报 `'ascii' codec can't encode characters`，设置：
-```powershell
-$env:PYTHONIOENCODING = "utf-8"
-```
-（永久方案：`[Environment]::SetEnvironmentVariable("PYTHONIOENCODING","utf-8","User")` 后重开终端）
-
-**⑤ 验证环境**
-
-```powershell
-python tests\test_env.py     # Neo4j + 大模型均显示 OK 即通过
-```
-
-### 1. 智能体层（无界面）
-
-在**已激活 .venv** 的终端里执行（下列 `python` 均指 `.venv\Scripts\python.exe`）：
-
-```bash
-python -m neo4j_tools.import_disease   # 导入知识图谱（31 节点 / 42 关系）
-
-python tests/test_env.py               # 环境自检（Neo4j + 大模型）
-python tests/test_retriever.py         # 检索层 17 项
-python tests/test_perception.py        # 感知层 7 项
-python tests/test_report.py            # 剂量护栏 4 项
-python tests/test_pipeline.py          # 端到端 2 场景
-
-python main.py                         # 命令行对话（--demo 跑内置示例）
-```
-
-### 2. 后端（Django，端口 8001）
-```bash
-cd backend
-pip install -r requirements-web.txt
-python manage.py migrate
-python manage.py runserver 0.0.0.0:8001
-```
-打开 `http://127.0.0.1:8001/api/health/` 可看到 django / neo4j / llm 三项探活结果。
-
-### 3. 前端（Vue3 + Vite，端口 5174）
-```bash
-cd frontend
-npm install
-npm run dev            # http://localhost:5174
-npm test               # 组件单元测试
-```
-> 端口特意与参考项目错开（前端 5174 / 后端 8001），两个项目可同时运行互不干扰。
-
----
-
-## 四、接口清单
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/health/` | 探活（`?probe=0` 跳过 Neo4j） |
-| GET | `/api/graph/stats/` | 图谱规模统计（区分疾病域与全库） |
-| GET | `/api/graph/subgraph/?name=` | **自研**：命中疾病的一跳子图（前端画图） |
-| GET | `/api/symptoms/` | **自研**：症状词表（联想输入 / 归一校验） |
-| POST | `/api/retrieve/` | 只做感知 + 图谱检索（秒级，不烧 token） |
-| POST | `/api/diagnose/` | 完整四角色流水线（含报告） |
-| POST | `/api/chat/` | 带记忆多轮对话（`session_id` 隔离） |
-| POST | `/api/chat/reset/` | 清空指定会话记忆 |
-| POST | `/api/evaluate/` | **自研**：双模式对照实验 |
-
-请求体统一 `{"text": "..."}`；业务异常返回 502 并带 `stage` 字段（pipeline / retrieval / llm / import）。
 
 ---
 

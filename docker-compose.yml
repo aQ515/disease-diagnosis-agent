@@ -56,7 +56,7 @@ services:
     env_file:
       - .env                       # DASHSCOPE_API_KEY（不进 git）
     volumes:
-      - ./fastapi_app/history.json:/app/fastapi_app/history.json
+      - ./backend/history.json:/app/backend/history.json
     depends_on:
       neo4j:
         condition: service_healthy

@@ -47,4 +47,9 @@ _scratch/
 db.sqlite3
 
 # ---- 运行时会话数据 ----
-fastapi_app/history.json
+backend/history.json
+
+# ---- v1 遗留目录（已由 backend 取代）----
+fastapi_app/
+
+README_FastAPI版.md
