@@ -1,6 +1,4 @@
-"""会话历史存储：本地 JSON 文件（session_id 隔离）。
-不引入 MySQL——对 AI 应用岗意义不大，且会增加部署配置负担。
-"""
+"""会话历史存储：本地 JSON 文件，按 session_id 隔离。"""
 import json
 import os
 import threading

@@ -1,4 +1,4 @@
-"""FastAPI 版本配置：复用项目根 .env，新增 Redis / 缓存开关。"""
+"""API 层配置：复用项目根 .env，含 Redis / 缓存开关。"""
 import os
 import sys
 

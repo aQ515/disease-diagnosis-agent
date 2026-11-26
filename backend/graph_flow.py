@@ -1,13 +1,8 @@
 """LangGraph 编排：意图识别 → 条件分支检索 → 诊断 → 报告 → END。
 
-对比旧版 agents/pipeline.py（硬编码四步顺序调用）：
-- 旧版：perceive → graph_retrieve → diagnose → report 固定顺序
-- 新版：StateGraph 显式建模每个节点 + 条件边，支持
-  * 条件路由：查药意图 → RAG 检索 / 查症状意图 → Neo4j 图谱 / 闲聊 → 直接对话
-  * 状态贯穿：每一步写入 AgentState，可观测、可回溯
-  * 易于扩展：加节点只改图，不改流程代码
-
-这是「Agent 工程」相对「链式调用」的升级，也是 JD 里的高频词。
+用 StateGraph 显式建模节点与条件边：
+- 条件路由：查药意图 → RAG 检索 / 查症状意图 → Neo4j 图谱 / 闲聊 → 直接对话
+- 状态贯穿：每一步写入 AgentState，便于观测与回溯
 """
 import os
 import sys

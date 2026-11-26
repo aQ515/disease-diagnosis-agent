@@ -1,28 +1,11 @@
-# 医疗 AI 智能导诊与用药助手（FastAPI + LangGraph 版）
+# 医疗 AI 智能导诊与用药助手
 
-> 本文档对应项目的 **v2 架构升级**：在原有「Neo4j + Django + 四角色 Agent」基础上，
-> 升级为 **FastAPI + SSE 流式 + LangGraph 编排 + Redis 缓存 + Docker 部署**。
-> 本版本已取代原 Django + Vue3 实现，为项目唯一主体；核心 agents/ 与 neo4j_tools/ 直接复用。
-
----
-
-## 一、为什么升级（技术决策）
-
-| 维度 | v1（Django） | v2（FastAPI + LangGraph） |
-|---|---|---|
-| 接口风格 | 同步返回完整 JSON | **SSE 流式**，打字机效果，用户可见阶段进度 |
-| 异步支持 | Django 同步为主 | **原生 async**，适合 LLM 长耗时 + 高并发 |
-| Agent 编排 | 硬编码四步顺序调用 | **LangGraph StateGraph**，条件分支 + 状态可观测 |
-| 缓存 | 无 | **Redis**（高频问答秒级返回，降级内存） |
-| 部署 | 手工起 3 个终端 | **docker compose 一键** |
-
-**面试可讲点**：这次升级不是堆技术名词，而是针对真实痛点——
-LLM 推理 3-6 秒用户干等（→ SSE）、流程写死难扩展（→ LangGraph）、
-重复问题反复烧 token（→ Redis）、环境难复现（→ Docker）。
+基于医疗知识图谱的多轮问答系统：Neo4j 存疾病图谱，LangGraph 编排检索与诊断，
+FastAPI 提供 SSE 流式接口，Redis 缓存高频问答。
 
 ---
 
-## 二、架构
+## 一、架构
 
 ```
 浏览器（Vue3 原生前端，无构建步骤）
@@ -44,11 +27,11 @@ Neo4j（疾病图谱） + 大模型（百炼 qwen-plus）
 
 ---
 
-## 三、快速开始
+## 二、快速开始
 
 ### 方式 A：本地跑（推荐先看这个）
 
-**1. 前置**：Neo4j 已启动（见主 README 的 JDK 11 说明）、`.env` 已配 Key。
+**1. 前置**：Neo4j 已启动（见附录「环境准备」）、`.env` 已配 Key。
 
 **2. 装依赖**
 ```powershell
@@ -57,8 +40,7 @@ cd disease-diagnosis-agent
 pip install fastapi uvicorn redis httpx langgraph==0.6.11 -i https://pypi.org/simple
 ```
 
-> ⚠️ **langgraph 必须锁 0.6.11**：新版 1.x 要求 langchain-core ≥1.0，会破坏本项目
-> langchain 0.3 全家桶。这是实测踩过的坑。
+> langgraph 需锁 0.6.11：1.x 要求 langchain-core ≥1.0，与本项目 langchain 0.3 不兼容。
 
 **3. 启动**
 ```powershell
@@ -84,7 +66,7 @@ docker exec -it medical-agent-api python -m neo4j_tools.import_disease
 
 ---
 
-## 四、接口清单
+## 三、接口清单
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -113,42 +95,42 @@ event: done      data: {"engine":"langgraph","route":"graph","sources":[...],"el
 
 ---
 
-## 五、四个核心实现（面试讲这些）
+## 四、核心实现
 
-### 1. SSE 流式打字机
+### SSE 流式打字机
 后端 `StreamingResponse` 按 2 字一片推送 `token` 事件；阶段事件让用户看到
 「理解 → 检索 → 生成」的进度，而不是干等 5 秒。前端用 `ReadableStream` 逐块解析。
 
-### 2. LangGraph 条件编排
+### LangGraph 条件编排
 `backend/graph_flow.py` 用 `StateGraph` 定义 6 个节点 + 1 个条件边：
 - 感知节点后按意图路由：用药类 → RAG 分支，症状类 → Neo4j 分支，闲聊 → 直接对话
 - 三条分支汇合到诊断 → 报告 → END
 - 每步写入 `trace`（耗时），前端 done 事件可展示全链路轨迹
 
-### 3. Redis 缓存降级
+### Redis 缓存降级
 `backend/cache.py`：Redis 优先，`ping` 不通自动降级内存字典。
 键 = 问题文本 md5，命中直接流式吐历史答案（25s → 2s）。
-**服务不会因为 Redis 挂掉而不可用**——这是生产环境常见降级策略。
+Redis 不可用时服务仍可用。
 
-### 4. 全链路降级
+### 全链路降级
 图谱不可用 → `_empty_result()` + 通用模式继续回答；
 LangGraph 不可用 → 回退原四角色流水线；
 模型输出带剂量 → `guard_dosage()` 正则替换为「具体用量请遵医嘱」。
-**每一层都有兜底**，不会把异常直接抛给用户。
+各层异常都有兜底，不会直接抛给用户。
 
 ---
 
-## 六、已知限制（诚实标注）
+## 五、已知限制
 
 - Redis 缓存按「问题文本 md5」做键，表述不同的同义问题不会命中（未做语义缓存）；
 - LangGraph 的 RAG 分支当前是 graph-backed 占位（项目未内置独立向量库），
   真正 RAG 在 `Medical-RAG-QA` 仓库；
-- 前端是单文件原生 HTML/CSS/JS，未用 Vue3 工程化构建——为了零构建、易演示；
-- MySQL 用户系统未实现（对 AI 应用岗意义有限，历史用本地 JSON 存储）。
+- 前端是单文件原生 HTML/CSS/JS，无构建步骤；
+- 未实现 MySQL 用户系统，会话历史存本地 JSON。
 
 ---
 
-## 七、目录
+## 六、目录
 
 ```
 backend/
@@ -165,9 +147,54 @@ Dockerfile
 
 ---
 
-# 附录：核心技术与踩坑（架构升级后仍适用）
+# 附录：技术与踩坑记录
 
-## 一、知识图谱设计
+### 环境准备
+
+**JDK 版本**
+
+Neo4j 3.5.x 只支持 Java 8 / 11，用 JDK 17 启动会崩溃并自动 shutdown。
+机器只有 JDK 17 时无需卸载，单独放一份 JDK 11 即可（如 `C:\Users\86181\java\jdk-11.0.33+10`）。
+
+**启动 Neo4j**（PowerShell，依次执行）
+
+```powershell
+$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"
+cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
+.\neo4j.bat console
+```
+
+看到 `Remote interface available at http://localhost:7474/` 即启动成功。该窗口不能关，
+否则服务停止；也可 `neo4j.bat install-service` + `neo4j.bat start` 装成后台服务。
+
+> 浏览器打开 `:7474` 若报 `NotFoundError: removeChild`，是 Neo4j 3.5 老版 Browser
+> 与新版浏览器内核不兼容，服务本身正常，用代码验证即可。
+
+**忘记密码时重置**（数据不丢）
+
+```powershell
+# 停服务后执行
+Remove-Item "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\data\dbms\auth" -Force
+cd "D:\vm\neo4j-community-3.5.28-windows\neo4j-community-3.5.28\bin"
+$env:JAVA_HOME = "C:\Users\86181\java\jdk-11.0.33+10"
+.\neo4j-admin.bat set-initial-password 123456
+```
+
+**Python 环境与编码**
+
+```powershell
+cd <项目根目录>
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt -i https://pypi.org/simple
+$env:PYTHONIOENCODING = "utf-8"   # Windows 终端中文输出
+```
+
+> pip 全局源若连不上，用 `pip config set global.index-url https://pypi.org/simple` 改掉。
+
+---
+
+### 知识图谱设计
 
 采用「中心辐射式」结构，以 `Disease` 为单中心向外发散：
 
@@ -211,63 +238,53 @@ Dockerfile
 
 ---
 
-## 二、项目结构
+### 项目结构
 
 ```
 disease-diagnosis-agent/
-├── config.py                  # 统一配置（从 .env 读取，兼容多种变量名写法）
+├── config.py                  # 统一配置（从 .env 读取）
 ├── .env / .env.example
-├── requirements.txt
+├── requirements.txt           # 核心依赖
+├── requirements-api.txt       # API 层依赖
 ├── main.py                    # 命令行交互入口
 ├── data/
 │   ├── disease_entities.csv   # 节点表（31）
 │   └── disease_relations.csv  # 关系表（42）
 ├── neo4j_tools/
 │   ├── connection.py          # Neo4j 单例连接
-│   ├── import_disease.py      # 一键导入（按 domain 隔离，不动库内其它数据）
+│   ├── import_disease.py      # 图谱导入（按 domain 隔离）
 │   └── retriever.py           # 检索层：疾病档案 / 多症状反查 / 鉴别诊断 / 证据链 / 子图
 ├── agents/
 │   ├── llm.py                 # 大模型入口（阿里云百炼 OpenAI 兼容模式）
-│   ├── perception.py          # ① 感知：意图 + 实体（含口语同义词归一）
+│   ├── perception.py          # 感知：意图 + 实体（含口语同义词归一）
 │   ├── tools.py               # 图谱检索工具（LangChain tool）
-│   ├── diagnosis_agent.py     # ③ 诊断：结构化 JSON（含置信度钳位）
-│   ├── report.py              # ④ 报告 + 剂量安全护栏
+│   ├── diagnosis_agent.py     # 诊断：结构化 JSON（含置信度钳位）
+│   ├── report.py              # 报告 + 剂量安全护栏
 │   ├── memory.py / chain.py   # 多会话记忆 / 带记忆对话
 │   └── pipeline.py            # 四角色流水线编排
-├── backend/                   # Django + DRF 接口层
-│   ├── manage.py
-│   ├── server/                # settings（跨域、DRF、项目根入 sys.path）
-│   ├── api/
-│   │   ├── views.py           # 9 个接口
-│   │   ├── services.py        # 服务层（间接层，便于 mock 测试）
-│   │   └── hallucination.py   # 幻觉检测（创新点 4 的判定器）
-│   ├── tests/check_api.py     # 接口验收脚本
-│   └── requirements-web.txt
-├── frontend/                  # Vue3 + Vite
-│   ├── vite.config.js         # 端口 5174，/api 代理到 8001
-│   └── src/
-│       ├── api/client.js
-│       ├── App.vue            # 状态条 + 左右两栏
-│       └── components/
-│           ├── SymptomPanel.vue      # 输入 + 症状联想
-│           ├── ResultPanel.vue       # 候选排序 / 鉴别 / 证据链 / 报告
-│           ├── SubgraphView.vue      # 手写 SVG 子图可视化
-│           ├── ChatBox.vue           # 多轮会话记忆
-│           ├── EvaluatePanel.vue     # 双模式对照实验
-│           └── SubgraphView.spec.js
+├── backend/                   # FastAPI 接口层
+│   ├── main.py                # SSE 接口 + 前端页面
+│   ├── graph_flow.py          # LangGraph 状态图编排
+│   ├── pipeline.py            # 引擎选择 + 降级
+│   ├── cache.py               # Redis → 内存缓存
+│   ├── history.py             # 会话历史（JSON）
+│   ├── config.py              # API 层配置
+│   └── static/index.html      # 前端页面
 ├── scripts/
-│   └── repair_node_modules.py  # 依赖完整性扫描 / 回补工具
-└── tests/
-    ├── test_env.py            # 环境自检
-    ├── test_retriever.py      # 检索层验收（17 项）
-    ├── test_perception.py     # 感知层验收（7 项）
-    ├── test_report.py         # 剂量护栏验收（4 项）
-    └── test_pipeline.py       # 端到端（2 场景）
+│   └── repair_node_modules.py
+├── tests/
+│   ├── test_env.py            # 环境自检
+│   ├── test_retriever.py      # 检索层验收（17 项）
+│   ├── test_perception.py     # 感知层验收（7 项）
+│   ├── test_report.py         # 剂量护栏验收（4 项）
+│   └── test_pipeline.py       # 端到端（2 场景）
+├── Dockerfile
+└── docker-compose.yml
 ```
 
 ---
 
-## 五、核心 Cypher
+### 核心 Cypher
 
 **别名检索疾病档案**
 ```cypher
@@ -305,12 +322,11 @@ RETURN d.name AS disease, type(r) AS rel, n.name AS target, labels(n)[0] AS targ
 
 ---
 
-## 六、创新点
+### 设计与改进
 
-参考项目给的是「设备故障诊断」的四角色骨架（Equipement/Fault + Django + Vue）。
-本项目在此之上做了 6 项自主设计与实测改进，每项都能在代码/实验里找到依据。
+以下是几处基于实测结果的设计选择。
 
-### 创新点 1：口语 → 图谱规范名的**症状归一引擎**
+### 口语 → 图谱规范名的**症状归一引擎**
 图谱存的是医学规范词（多饮 / 多尿 / 体重下降），用户说的是口语（口渴 / 尿多 / 瘦了）。
 感知层内置约 30 条同义词映射，把口语归一后再检索。
 
@@ -318,7 +334,7 @@ RETURN d.name AS disease, type(r) AS rel, n.name AS target, labels(n)[0] AS targ
 - 代码：`agents/perception.py` 的 `SYNONYMS` / `normalize_symptom()`；
 - 验证：`tests/test_perception.py` 三组口语用例（口渴→多饮、头疼→头痛、嗓子疼→咽痛）。
 
-### 创新点 2：**特异度加权**的候选疾病排序
+### **特异度加权**的候选疾病排序
 不只看「命中几个症状」，而是给每个症状算特异度权重：
 `score = Σ(1 / 该症状能指示的疾病数)`。
 
@@ -328,7 +344,7 @@ RETURN d.name AS disease, type(r) AS rel, n.name AS target, labels(n)[0] AS targ
   **排序不再是黑盒**，前端用进度条展示。
 - 代码：`neo4j_tools/retriever.py` 的 `_retrieve_by_symptoms()` / `_symptom_degrees()`。
 
-### 创新点 3：**剂量安全护栏** + 置信度钳位（医疗场景专用）
+### **剂量安全护栏** + 置信度钳位（医疗场景专用）
 实测中大模型会在报告里写「起始剂量通常为 500mg 每日 1-2 次」，而图谱里根本没有剂量 —— 这是编造。
 
 - `agents/report.py` 的 `guard_dosage()`：报告生成后正则校验（支持 `1-2次` 这类区间写法），
@@ -337,8 +353,8 @@ RETURN d.name AS disease, type(r) AS rel, n.name AS target, labels(n)[0] AS targ
   不允许出现「100% 确诊」；
 - 验证：`tests/test_report.py` 4 项（编造剂量被替换、图谱内数字保留、生活方式数字不受影响）。
 
-### 创新点 4：**双模式对照实验**，用数据说明图谱的价值
-新增 `/api/evaluate/` 接口：同一批问题跑两遍 —— A 组纯大模型自由回答，B 组走图谱增强流水线；
+### 双模式对照实验
+同一批问题跑两遍 —— A 组纯大模型自由回答，B 组走图谱增强流水线；
 再用「图谱白名单 + 实体抽取」统计两组回答里出现的**图谱外药物/疾病名**，算出越界率。
 
 VM 实测（3 个问题）：
@@ -351,34 +367,30 @@ VM 实测（3 个问题）：
 A 组编造了 `1型糖尿病`、`尿崩症`、`房颤`、`脑卒中`、`视网膜病变` 等图谱里没有的病名；
 B 组因为先查图谱、再让模型基于事实组织语言，全部提及都落在知识库范围内。
 
-- 代码：`backend/api/hallucination.py`（抽取 + 白名单判定）、`services.evaluate()`；
 - 判定器做了**双向包含**兜底：图谱存「二甲双胍口服」，回答写「二甲双胍」同样算命中，
   避免命名粒度差异造成误判；同时保证 `1型糖尿病` 与 `2型糖尿病` 不会被误判为同一个。
-- ⚠️ 客观说明：该指标衡量的是「提及是否落在知识库覆盖范围内」，B 组天然受限于图谱规模
+- 说明：该指标衡量的是「提及是否落在知识库覆盖范围内」，B 组天然受限于图谱规模
   （图谱只有 3 个病，A 组提到的其它真实疾病本来就不在库内）。它证明的是
   「图谱增强能把回答约束在可信知识内」，而不是「B 组医学上更正确」。
 
-### 创新点 5：**证据链**与**子图可视化**（可解释性）
+### 证据链与子图可视化
 - 检索结果附带 `evidence`：图谱里真实走过的边（`HAS_SYMPTOM → 多饮`、`TREATED_BY → 二甲双胍口服` …），
   前端表格逐条列出 —— 结论可以回溯，不是一句「根据相关资料」；
-- 新增 `/api/graph/subgraph/` 返回一跳子图，前端 `SubgraphView.vue` **手写 SVG** 绘制星形图
-  （不引 echarts/vis-network，零体积、离线可用、答辩好讲）；
-- 验证：`frontend/src/components/SubgraphView.spec.js`（节点数/边数/关系标签/空态）。
+- 新增 `/api/graph/subgraph/` 返回一跳子图，前端手写 SVG 绘制星形图（不引第三方可视化库）；
 
-### 创新点 6：**症状联想输入**（把图谱能力前置到输入环节）
-前端调 `/api/symptoms/` 拉取图谱里的症状词表，渲染成可点击的 chip，点一下追加到提问里。
+### 症状联想输入
+前端拉取图谱里的症状词表，渲染成可点击的 chip，点一下追加到提问里。
 用户能直观看到「图谱认识哪些症状」，从源头减少自由文本写出图谱不认识的词导致的检索空转。
 
 ### 另外两处工程改进
-- **消除重复检索**：参考项目的 `pipeline` 先检索一次，Agent 里的工具又检索一次（同一问题跑两遍）。
+- **消除重复检索**：`pipeline` 先检索一次，Agent 里的工具又检索一次（同一问题跑两遍）。
   本项目把检索结果直接作为**事实**传给诊断角色（`diagnose(..., retrieval=...)`），
   只在大模型需要自主决定是否查图谱时才走 Agent 工具链 —— 省一次完整检索与一次 LLM 调用。
-- **导入按域名隔离**：`import_disease.py` 只清除 `domain='disease'` 的节点，
-  与库内原有数据（如参考项目的设备图谱 21 节点）共存互不干扰。
+- **导入按域名隔离**：`import_disease.py` 只清除 `domain='disease'` 的节点，不影响库内其它数据。
 
 ---
 
-## 七、开发记录（实测踩到的坑）
+### 开发记录
 
 | # | 现象 | 根因 | 修法 |
 |---|---|---|---|
@@ -387,8 +399,7 @@ B 组因为先查图谱、再让模型基于事实组织语言，全部提及都
 | 3 | 场景一给出「置信度 100%」 | 模型把「症状完全匹配」当成「医学确诊」 | 提示词明确 confidence 含义 + 代码 `_clamp_confidence` 强制 ≤0.9 |
 | 4 | 别名检索失败（「消渴病」查不到） | 单靠 `d.name CONTAINS` 匹配不到别名 | 查询条件扩展为 `name/alias1/alias2` 双向包含，并按精确匹配优先级排序 |
 | 5 | 对照实验首版结果「A 组 100% / B 组 100%」完全失真 | 规则抽取把「型糖尿病的典型警示症」当成疾病实体 | 改为大模型抽取 + 停用字过滤 + 规则兜底，并加双向包含判定 |
-| 6 | `npm test` 报 `Cannot find module http-proxy-agent/dist/index.js` | 依赖在别处安装时丢了 14 个包的入口文件（dev 链路，不影响 dev server） | 从镜像重新拉取这 14 个包整体覆盖，并用 `scripts/repair_node_modules.py` 前置扫描缺失入口 |
-| 7 | Neo4j 启动即自动 shutdown（日志 `shutdown initiated by request` + 一栈 Java 异常） | 机器只有 JDK 17，Neo4j 3.5.x 不兼容 Java 17 | 装独立 JDK 11，启动前设 `$env:JAVA_HOME` 指向它（见「三、0.①」） |
+| 7 | Neo4j 启动即自动 shutdown（日志 `shutdown initiated by request` + 一栈 Java 异常） | 机器只有 JDK 17，Neo4j 3.5.x 不兼容 Java 17 | 装独立 JDK 11，启动前设 `$env:JAVA_HOME` 指向它（见附录「环境准备」） |
 | 8 | 浏览器打开 `:7474` 报 `NotFoundError: removeChild` | Neo4j 3.5 老版 Browser 前端与现代浏览器内核不兼容 | 服务本身正常，忽略该页面，用代码验证连接 |
 | 9 | `import_disease` 报 `py2neo.errors.ClientError: [Security.Unauthorized]` | `.env` 里 `NEO4J_PASSWORD` 是旧密码，与重置后的不一致 | 把 `.env` 的 `NEO4J_PASSWORD` 改成实际密码；另注意要用 `.venv` 的解释器而非全局 `python` |
 | 10 | `pip install` 报 `Could not find a version... (from versions: none)` | 全局 pip 配的清华源在本机连不上（网络问题，不是没包） | `pip install -r requirements.txt -i https://pypi.org/simple`；或 `pip config set global.index-url https://pypi.org/simple` |
@@ -402,4 +413,4 @@ B 组因为先查图谱、再让模型基于事实组织语言，全部提及都
 - 症状同义词表是手工维护的白名单，新病种带来新口语说法时需要同步补充；
 - 未接入真实患者病史，`confidence` 只反映「与图谱的匹配程度」，不是医学概率；
 - 图谱里没有剂量信息，因此本项目**刻意不给任何具体用法用量**，只做方案推荐与就诊科室引导；
-- 对照实验（创新点 4）衡量的是「提及是否落在知识库范围内」，受图谱规模限制，详见该节说明。
+- 对照实验衡量的是「提及是否落在知识库范围内」，受图谱规模限制，详见该节说明。
